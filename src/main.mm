@@ -30,7 +30,7 @@
 
 #define WINDOW_WIDTH 1600
 #define WINDOW_HEIGHT 900
-#define MAX_NUMBER_PARTICLES 50
+#define MAX_NUMBER_PARTICLES 5000
 #define PARTICLE_TIME_MAX_MS 3000.0f
 
 struct ParticleData
@@ -74,6 +74,22 @@ static id<MTLRenderPipelineState> genRenderPipelineDescriptor(id<MTLDevice> devi
    return pipelineState;
 }
 
+static id<MTLComputePipelineState> genComputePipelineDescriptor(id<MTLDevice> device)
+{
+   NSError* error = nil;
+   id<MTLFunction> kernelFunction = [[device newDefaultLibrary] newFunctionWithName:@"particleComputeMain"];
+   
+   id<MTLComputePipelineState> state = [device newComputePipelineStateWithFunction:kernelFunction error:&error];
+   
+   if (error)
+   {
+      printf("Error with compute pipeline: %s\n", [error.localizedDescription UTF8String]);
+      exit(1);
+   };
+   
+   return state;
+}
+
 void resetParticle(ParticleData &p)
 {
    float x = (float)(rand() % 1000) - 500.0;
@@ -108,12 +124,11 @@ int main(int argc, char* argv[])
    
    float aspect = (float)WINDOW_WIDTH/(float)WINDOW_HEIGHT;
    float fov = M_PI_2;
-   //matrix_float4x4 projMatrix = matrix_float4x4_perspective(aspect, fov, 0.01f, 500.0f);
-   matrix_float4x4 projMatrix = matrix_identity_float4x4;
+   matrix_float4x4 projMatrix = matrix_float4x4_perspective(aspect, fov, 0.01f, 500.0f);
    
-   matrix_float4x4 pitch = matrix_float4x4_rotation((vector_float3){1,0,0}, 0.f);
-   matrix_float4x4 yaw = matrix_float4x4_rotation((vector_float3){0,0,1}, 0.f);
-   matrix_float4x4 position = matrix_float4x4_translation((vector_float3){0.f, 0.f, 0.f}); // 1.8f, 2.0f, -1.85f
+   matrix_float4x4 pitch = matrix_float4x4_rotation((vector_float3){1,0,0}, -0.f);
+   matrix_float4x4 yaw = matrix_float4x4_rotation((vector_float3){0,0,1}, -2.34f);
+   matrix_float4x4 position = matrix_float4x4_translation((vector_float3){0.f, 0.0f, -0.5f});
    matrix_float4x4 viewMatrix = matrix_multiply(matrix_multiply(pitch, yaw), position);
    
    RenderUniforms renderUniforms;
@@ -121,6 +136,7 @@ int main(int argc, char* argv[])
    renderUniforms.deltaMS = 0;
    
    id<MTLRenderPipelineState> renderPipelineState = genRenderPipelineDescriptor(device, swapChain.pixelFormat);
+   id<MTLComputePipelineState> computePipelineState = genComputePipelineDescriptor(device);
    
    ParticleData* particleData = new ParticleData[MAX_NUMBER_PARTICLES];
    for (int i = 0; i < MAX_NUMBER_PARTICLES; ++i)
@@ -129,11 +145,11 @@ int main(int argc, char* argv[])
       resetParticle(p);
    }
    
-//   id<MTLBuffer> particleVertexBuffer = [device
-//      newBufferWithBytes:particleData
-//      length:MAX_NUMBER_PARTICLES * sizeof(ParticleData)
-//      options:MTLResourceStorageModeManaged
-//   ];
+   id<MTLBuffer> particleVertexBuffer = [device
+      newBufferWithBytes:particleData
+      length:MAX_NUMBER_PARTICLES * sizeof(ParticleData)
+      options:MTLResourceStorageModeManaged
+   ];
 
    double lastTimeStamp = glfwGetTime();
    
@@ -146,23 +162,19 @@ int main(int argc, char* argv[])
       lastTimeStamp = currentTime;
       
       renderUniforms.deltaMS = dt;
-      
-      float deltaSeconds = (float)(dt / 1000.0f);
-      for (int i = 0; i < MAX_NUMBER_PARTICLES; ++i)
-      {
-         ParticleData& p = particleData[i];
-         p.position += p.velocity * deltaSeconds;
-         p.lifeTime += (float)dt;
 
-         if (p.lifeTime > p.lifeTimeMax)
-         {
-            resetParticle(p);
-         }
-      }
-      
       @autoreleasepool {
          id<CAMetalDrawable> surface = [swapChain nextDrawable];
          id<MTLCommandBuffer> cmdBuffer = [queue commandBuffer];
+         
+         id<MTLComputeCommandEncoder> computeEnc = [cmdBuffer computeCommandEncoder];
+         [computeEnc setComputePipelineState:computePipelineState];
+         [computeEnc setBuffer:particleVertexBuffer offset:0 atIndex:0];
+         [computeEnc setBytes:&renderUniforms length:sizeof(renderUniforms) atIndex:1];
+         [computeEnc dispatchThreads:{MAX_NUMBER_PARTICLES, 1, 1} threadsPerThreadgroup:{1, 1, 1}];
+         [computeEnc endEncoding];
+         
+         // TODO: synchronize?
          
          MTLRenderPassDescriptor *renderPass = [MTLRenderPassDescriptor renderPassDescriptor];
          renderPass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
@@ -173,8 +185,7 @@ int main(int argc, char* argv[])
          id<MTLRenderCommandEncoder> cmdEncoder = [cmdBuffer renderCommandEncoderWithDescriptor:renderPass];
          [cmdEncoder setViewport:(MTLViewport){0.0, 0.0, (float)WINDOW_WIDTH, (float)WINDOW_HEIGHT, 0.0, 1.0}];
          [cmdEncoder setRenderPipelineState:renderPipelineState];
-         //[cmdEncoder setVertexBuffer:particleVertexBuffer offset:0 atIndex:0];
-         [cmdEncoder setVertexBytes:particleData length:sizeof(ParticleData) * MAX_NUMBER_PARTICLES atIndex:0];
+         [cmdEncoder setVertexBuffer:particleVertexBuffer offset:0 atIndex:0];
          [cmdEncoder setVertexBytes:&renderUniforms length:sizeof(renderUniforms) atIndex:1];
 
          [cmdEncoder drawPrimitives:MTLPrimitiveTypePoint vertexStart:0 vertexCount:MAX_NUMBER_PARTICLES];

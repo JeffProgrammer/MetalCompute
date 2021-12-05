@@ -22,7 +22,7 @@
 #include <simd/simd.h>
 using namespace metal;
 
-struct VertexIn
+struct ParticleData
 {
    vector_float4 position;
    vector_float4 velocity;
@@ -41,11 +41,12 @@ struct VertexOut
 struct RenderUniforms
 {
    matrix_float4x4 projViewMatrix;
+   float timeDeltaMS;
 };
 
 vertex VertexOut particleVertMain
 (
-   const constant VertexIn* vertex_buffer [[buffer(0)]],
+   const constant ParticleData* vertex_buffer [[buffer(0)]],
    const constant RenderUniforms* uniforms [[buffer(1)]],
    unsigned int vertexId [[vertex_id]]
 )
@@ -61,4 +62,22 @@ vertex VertexOut particleVertMain
 fragment vector_float4 particleFragMain(VertexOut fragData [[stage_in]])
 {
    return fragData.color;
+}
+
+kernel void particleComputeMain(
+   device ParticleData* buffer [[buffer(0)]],
+   constant RenderUniforms *uniforms [[buffer(1)]],
+   unsigned int index [[thread_position_in_grid]]
+)
+{
+   float dt = uniforms->timeDeltaMS;
+
+   buffer[index].position += buffer[index].velocity * (dt / 1000.0f);
+   buffer[index].lifeTime += dt;
+   
+   if (buffer[index].lifeTime > buffer[index].lifeTimeMax)
+   {
+      buffer[index].position = (vector_float4){0.0, 0.0, 0.0, 1.0};
+      buffer[index].lifeTime = 0;
+   }
 }
